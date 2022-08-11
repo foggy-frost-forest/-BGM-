@@ -1,0 +1,139 @@
+import numpy as np
+import scipy.io.wavfile as siw
+import scipy
+from librosa.feature import melspectrogram   #梅尔滤波器
+from matplotlib import pyplot as plt
+from scipy.fftpack import dct
+import librosa
+
+signal_begin = 0  # 输入语音起始位置（单位：s）
+signal_end = 3.5  # 输入语音结束位置（单位：s）
+wav_address = 'E:\OSR_us_000_0010_8k.wav'  # wav文件地址
+emphasis_weight = 0.97  # 预加重的权重
+frame_size = 0.025  # 一帧时长（单位：s）
+frame_stride = 0.01  # 帧间隔
+fft_num = 512  # FFT变换的点数
+filt_num = 40  # 滤波器个数
+vec_num = 12    #取mfcc向量个数
+
+
+
+def read_wav(address):
+    global signal_begin, signal_end
+    sample_rate, signal = siw.read(address)
+    # print(sample_rate, len(signal))
+    signal = signal[int(signal_begin * sample_rate):int(signal_end * sample_rate)]
+    # for i in range(0,100):
+    #     print(signal[i],end=" ")
+    # print("\n")
+    plt.plot(signal)
+    plt.show()
+    return sample_rate, signal  # signal是ndarray对象
+
+
+def pre_emphasis(signal):  # 加重
+    global emphasis_weight
+    emphasized_signal = np.append(signal[0], signal[1:] - emphasis_weight * signal[:-1])
+    # for i in range(0,100):
+    #     print(emphasized_signal[i],end=" ")
+    # print("\n")
+    # plt.plot(emphasized_signal)
+    # plt.show()
+    return emphasized_signal
+
+
+def add_hamming(signal, rate):
+    global frame_size, frame_stride, sa
+    frame_length = int(round(frame_size * rate))
+    frame_step = int(round(frame_stride * rate))
+    signal_length = len(signal)
+    frame_num = int(np.floor((signal_length - frame_length) / frame_step + 1))
+    print(frame_length, frame_step, signal_length, frame_num)
+
+    ea = np.tile(np.arange(0, frame_length), (frame_num, 1))
+    ha = np.tile(np.arange(0, frame_num * frame_step, frame_step), (frame_length, 1)).T
+    pa = np.mat(ha + ea)
+
+    frames = signal[pa.astype(np.int32)]
+    frames *= np.hamming(frame_length)
+
+    # print(frames)
+    # plt.plot(pad_signal)
+    # plt.show()
+    return frames
+
+
+def fft_trans(frames):
+    global fft_num
+    mag_frames = np.abs(np.fft.rfft(frames, fft_num))
+    pow_frames = ((1.0 / fft_num) * (mag_frames ** 2))  # 得到功率谱
+    # plt.plot(pow_frames)
+    # plt.show()
+
+    return pow_frames
+
+
+def mel_filter(frames, rate):
+    low_freq = 0
+    high_freq = (2595 * np.log10(1 + (rate / 2) / 700))
+
+    mel_points = np.linspace(low_freq, high_freq, filt_num + 2)  # 得到梅尔频率下的滤波器中心点
+    time_points = (700 * (10 ** (mel_points / 2595) - 1))  # 梅尔频率转时域信号下的滤波中心
+    freq_points = np.floor((fft_num + 1) * time_points / rate)  # 时域频率组转频域信号下的滤波器中心
+
+    m_filter = np.zeros((filt_num, int(np.floor(fft_num / 2 + 1))))  # 建立梅尔滤波器m_filter
+    for m in range(1, filt_num + 1):
+        f_pre = int(freq_points[m - 1])  # 上一个滤波器中心f(m-1)，即当前滤波器开始位
+        f_now = int(freq_points[m])  # 当前滤波器中心f(m)
+        f_aft = int(freq_points[m + 1])  # 下一个滤波器中心f(m+1)，即当前滤波器结束位
+        for k in range(f_pre, f_now):
+            m_filter[m - 1, k] = (k - freq_points[m - 1]) / (freq_points[m] - freq_points[m - 1])
+        for k in range(f_now, f_aft):
+            m_filter[m - 1, k] = (freq_points[m + 1] - k) / (freq_points[m + 1] - freq_points[m])
+
+    filter_banks = np.dot(frames, m_filter.T)  # 滤波
+    filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)  # 数值稳定性
+    filter_banks = 20 * np.log10(filter_banks)  # 转换为分贝
+
+    return filter_banks,m_filter
+
+
+def get_mfcc(filter_banks):
+    global vec_num
+
+    mfcc = scipy.fftpack.dct(filter_banks.T, axis=0, type=2, norm='ortho')[:vec_num].T  #dct
+
+    mfcc -= (np.mean(mfcc, axis=0) + 1e-8)  #归一化
+
+    return mfcc
+
+
+def test(address,m_filter):
+    # path：文件路径，sr：采样率（None为音频默认采样率），mono：true单声道/false双声道，offset：采样起始位，duration：采样时长
+    wavsignal, fs = librosa.load(path=address,sr=None,offset=signal_begin,duration=signal_end-signal_begin)
+    # fs, signal = siw.read(address)
+    # plt.plot(wavsignal)
+    # plt.show()
+    # m_filter = librosa.core.amplitude_to_db(melspectrogram(y=wavsignal, sr=fs))
+    mfccs = librosa.feature.mfcc(y=wavsignal, sr=fs, S=m_filter.T, n_mfcc=vec_num, dct_type=2, norm='ortho')
+    plt.plot(mfccs.T)
+    plt.show()
+    return mfccs
+
+
+def main():
+    sample_rate, signal = read_wav(wav_address)
+    signal = pre_emphasis(signal)
+    frames = add_hamming(signal, sample_rate)
+    pow_frames = fft_trans(frames)
+    filter_banks,filter = mel_filter(pow_frames, sample_rate)
+    mfcc=get_mfcc(filter_banks)
+
+    plt.plot(mfcc)
+    plt.show()
+
+    test(wav_address,filter_banks)
+main()
+
+
+
